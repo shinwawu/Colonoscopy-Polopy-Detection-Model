@@ -1,6 +1,0 @@
-path: /home/soiltecnologia/Documentos/Projects/Colonoscopy-Polopy-Detection-Model/data/processed/Kvasir-SEG
-train: images/train
-val: images/val
-test: images/test
-names:
-  0: polyp

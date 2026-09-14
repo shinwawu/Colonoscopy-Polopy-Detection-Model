@@ -1,1 +1,12 @@
 .venv
+.DS_Store
+
+# dados derivados: gerados por src/preprocess.py a partir de data/raw/
+# data/raw/ FICA versionado, para quem clonar conseguir rodar o preprocess
+data/processed/
+
+# saidas de treino e pesos
+weights/
+*.pt
+
+data/raw/hyperkvasir/
