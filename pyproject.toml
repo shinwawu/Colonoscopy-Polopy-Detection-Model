@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "albumentations>=2.0.8",
     "ipykernel>=7.3.0",
     "opencv-python>=5.0.0.93",
+    "segmentation-models-pytorch>=0.5.0",
     "ultralytics>=8.4.146",
 ]
 

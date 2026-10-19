@@ -1,0 +1,30 @@
+{
+  "split": "test",
+  "grade": "384x384",
+  "area_minima": 500,
+  "unet": {
+    "pesos": "runs/unet-baseline/weights/best.pt",
+    "dice": 0.8204333615202788,
+    "dice_mediana": 0.8982259892436557,
+    "dice_erro_padrao": 0.020707360002190704,
+    "iou": 0.7356575799697592,
+    "fp_fundos": 0.019801980198019802,
+    "falhas_dice_abaixo_0.5": 9,
+    "acertos_dice_acima_0.9": 50,
+    "n_positivos": 100,
+    "n_fundos": 101
+  },
+  "yolo": {
+    "pesos": "runs/s640_grupo/weights/best.pt",
+    "conf": 0.25,
+    "dice": 0.8861081000155484,
+    "dice_mediana": 0.9528630780609535,
+    "dice_erro_padrao": 0.01973557014861442,
+    "iou": 0.832690138278161,
+    "fp_fundos": 0.06930693069306931,
+    "falhas_dice_abaixo_0.5": 6,
+    "acertos_dice_acima_0.9": 78,
+    "n_positivos": 100,
+    "n_fundos": 101
+  }
+}

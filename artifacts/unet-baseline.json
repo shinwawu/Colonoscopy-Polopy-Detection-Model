@@ -1,0 +1,24 @@
+{
+  "nome": "unet-baseline",
+  "data": "2026-10-19T13:34:11",
+  "config": {
+    "modelo": "unet (base=32)",
+    "parametros_M": 7.76,
+    "epocas": 100,
+    "imgsz": 384,
+    "batch": 8,
+    "lr": 0.001,
+    "melhor_epoca": 84,
+    "split": "test",
+    "pesos": "runs/unet-baseline/weights/best.pt"
+  },
+  "metricas": {
+    "dice": 0.8200376236825743,
+    "iou": 0.7343352269707419,
+    "fp_fundos": 0.04950495049504951,
+    "perda": 0.1487210652961109,
+    "n_positivos": 100,
+    "n_fundos": 101
+  },
+  "val_melhor_dice": 0.8006754601322964
+}
