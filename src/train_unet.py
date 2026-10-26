@@ -1,3 +1,5 @@
+"""Treina a U-Net e avalia o melhor checkpoint de validação no teste interno."""
+import argparse
 import json
 import random
 from datetime import datetime
@@ -9,218 +11,211 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 
+from avaliacao_externa import carregar_casos_internos, carregar_referencia, filtrar_mascara, ler_imagem, sha256
+from config import DADOS, DESVIO, MEDIA, NOME_UNET, ROOT, dispositivo
 from unet import UNet
 
-path = Path(__file__).parent.parent
-data_path = path / "data/processed/Kvasir-SEG"
-runs_path = path / "runs"
-artifacts_path = path / "artifacts"
-
-NOME = "unet-baseline"
+# Defaults do baseline original; novos experimentos têm um diretório próprio.
+data_path, runs_path, artifacts_path = DADOS, ROOT / "runs", ROOT / "artifacts"
+NOME = NOME_UNET
 EPOCAS, IMGSZ, BATCH = 100, 384, 8
-LEARNING_RATE, EARLY_STOP, SEED = 1e-3, 25, 42
-# tamanho da primeira camada convolucional, que dobra a cada downsampling
-BASE = 32         
-# area minima (em pixels) de um componente conexo na predicao. um polipo real ocupa
-# ~22k px em 384x384, entao mancha de poucas centenas de pixels e ruido, nao lesao.
-AREA_MINIMA = 500
+LEARNING_RATE, EARLY_STOP, SEED, BASE, AREA_MINIMA = 1e-3, 25, 42, 32, 500
 
-# normalizacao da imagem, usando media e desvio padrao do ImageNet
-MEDIA = np.array([0.485, 0.456, 0.406], np.float32)
-DESVIO = np.array([0.229, 0.224, 0.225], np.float32)
 
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
-# data augmentation: flip horizontal, vertical e rotacao de ate 15 graus
 def aumenta(img, msk, rng):
-    if rng.random() < 0.5:                      # girar a imagem para a esquerda/direita (flip horizontal)
+    if rng.random() < 0.5:
         img, msk = img[:, ::-1], msk[:, ::-1]
-    if rng.random() < 0.5:                      # girar a imagem para cima/baixo (flip vertical)
+    if rng.random() < 0.5:
         img, msk = img[::-1], msk[::-1]
-    ang = rng.uniform(-15, 15)                  # rotacionar a imagem em ate 15 graus
     h, w = msk.shape
-    M = cv2.getRotationMatrix2D((w / 2, h / 2), ang, 1.0)
-    img = cv2.warpAffine(np.ascontiguousarray(img), M, (w, h), flags=cv2.INTER_LINEAR)
-    #aqui usamos INTER_NEAREST para nao criar pixels intermediarios na mascara, que e binaria
-    msk = cv2.warpAffine(np.ascontiguousarray(msk), M, (w, h), flags=cv2.INTER_NEAREST)
+    matriz = cv2.getRotationMatrix2D((w / 2, h / 2), rng.uniform(-15, 15), 1.0)
+    img = cv2.warpAffine(np.ascontiguousarray(img), matriz, (w, h), flags=cv2.INTER_LINEAR)
+    msk = cv2.warpAffine(np.ascontiguousarray(msk), matriz, (w, h), flags=cv2.INTER_NEAREST)
     return img, msk
 
 
 class KvasirSeg(Dataset):
-    def __init__(self, split, treino=False):
-        # split e "train", "val" ou "test"; treino=True ativa data augmentation
-        self.imgs = sorted((data_path / "images" / split).glob("*.jpg"))
-        self.masks = data_path / "masks_binary"
-        self.treino = treino
+    def __init__(self, split, treino=False, dados=None, imgsz=IMGSZ, seed=SEED):
+        self.casos = carregar_casos_internos(dados or data_path, split)
+        self.imgs = [Path(c["caminho"]) for c in self.casos]
+        self.treino, self.imgsz, self.seed = treino, imgsz, seed
 
     def __len__(self):
-        return len(self.imgs)
+        return len(self.casos)
 
     def __getitem__(self, i):
-        # ler a imagem e a mascara correspondente; se nao houver mascara, e um negativo (fundo)
-        f = self.imgs[i]
-        img = cv2.cvtColor(cv2.imread(str(f)), cv2.COLOR_BGR2RGB)
-
-        mp = self.masks / f"{f.stem}.png"
-        if mp.exists():
-            msk = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
-        else:
-            # se nao houver mascara, criamos uma mascara vazia
-            msk = np.zeros(img.shape[:2], np.uint8)
-
-        # redimensiona o par de imagem+mascara para o tamanho fixo da rede
-        img = cv2.resize(img, (IMGSZ, IMGSZ), interpolation=cv2.INTER_LINEAR)
-        msk = cv2.resize(msk, (IMGSZ, IMGSZ), interpolation=cv2.INTER_NEAREST)
-
-        # realiza data augmentation apenas no treino
+        caso = self.casos[i]
+        img = ler_imagem(caso["caminho"])
+        msk, _ = carregar_referencia(caso, img.shape[:2])
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (self.imgsz, self.imgsz), interpolation=cv2.INTER_LINEAR)
+        msk = cv2.resize(msk, (self.imgsz, self.imgsz), interpolation=cv2.INTER_NEAREST)
         if self.treino:
-            img, msk = aumenta(img, msk, random.Random(SEED + i + random.randint(0, 10**6)))
-
-        # normaliza a imagem para [0,1], subtrai a media e divide pelo desvio padrao
+            rng = random.Random(self.seed + i + random.randint(0, 10**6))
+            img, msk = aumenta(img, msk, rng)
         img = (np.ascontiguousarray(img).astype(np.float32) / 255.0 - MEDIA) / DESVIO
         return (torch.from_numpy(img).permute(2, 0, 1),
                 torch.from_numpy(np.ascontiguousarray(msk).astype(np.float32))[None])
 
 
 def loss_dice(logit, alvo, eps=1.0):
-    # calculando o dice score, pois devido a desbalanceamento de classes
     p = torch.sigmoid(logit)
     num = 2 * (p * alvo).sum(dim=(1, 2, 3)) + eps
     den = p.sum(dim=(1, 2, 3)) + alvo.sum(dim=(1, 2, 3)) + eps
     return 1 - (num / den).mean()
 
-# loss function combinando BCE e Dice, para lidar com desbalanceamento de classes
+
 bce = nn.BCEWithLogitsLoss()
+
+
 def loss_bce_dice(logit, alvo):
     return 0.5 * bce(logit, alvo) + 0.5 * loss_dice(logit, alvo)
 
-# pos-processamento: apaga da predicao os componentes conexos menores que area_minima.
-# nao muda o modelo, so limpa a saida dele; area_minima=0 desliga o filtro.
+
 def remove_blobs(p_i, area_minima=AREA_MINIMA):
-    if area_minima <= 0 or p_i.sum() == 0:
-        return p_i
-    m = p_i[0].cpu().numpy().astype(np.uint8)
-    n, rotulos, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
-    # o rotulo 0 e o fundo, por isso o range comeca em 1
-    for k in range(1, n):
-        if stats[k, cv2.CC_STAT_AREA] < area_minima:
-            m[rotulos == k] = 0
+    m = filtrar_mascara(p_i[0].cpu().numpy(), area_minima)
     return torch.from_numpy(m).to(p_i.device, torch.float32)[None]
 
 
-# aqui comparamos o desempenho do modelo em imagens de validação ou teste, calculando métricas como Dice, IoU e taxa de falso positivo
 @torch.no_grad()
-def avalia(modelo, loader, limiar=0.5, area_minima=AREA_MINIMA):
-    # aqui estamos avaliando o modelo em um conjunto de dados (loader) e calculando métricas como Dice, IoU e taxa de falso positivo
+def avalia(modelo, loader, limiar=0.5, area_minima=AREA_MINIMA, amp=True):
+    device = next(modelo.parameters()).device
     modelo.eval()
-    # inicializando listas e contadores para armazenar métricas
     dices, ious, fp, n_fundo, perdas = [], [], 0, 0, []
     for x, y in loader:
-        # movendo os dados para a GPU e habilitando o autocast para reduzir o uso de memória
-        x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
-        with torch.autocast("cuda", dtype=torch.float16):
-            # fazendo a inferência do modelo e calculando a perda
+        x, y = x.to(device), y.to(device)
+        with torch.autocast(device.type, enabled=amp and device.type == "cuda"):
             logit = modelo(x)
         perdas.append(loss_bce_dice(logit.float(), y).item())
         pred = (torch.sigmoid(logit.float()) > limiar).float()
-        # calculando métricas para cada imagem no batch
         for p_i, y_i in zip(pred, y):
             p_i = remove_blobs(p_i, area_minima)
             inter = (p_i * y_i).sum().item()
-            soma, uniao = (p_i.sum() + y_i.sum()).item(), ((p_i + y_i) > 0).sum().item()
-            # se a imagem nao tiver nenhum pixel positivo (ou seja, e um fundo), contamos como falso positivo se o modelo previu algum pixel positivo
-            if y_i.sum() == 0:                  
+            soma = (p_i.sum() + y_i.sum()).item()
+            uniao = ((p_i + y_i) > 0).sum().item()
+            if y_i.sum() == 0:
                 n_fundo += 1
                 fp += int(p_i.sum() > 0)
             else:
                 dices.append(2 * inter / soma if soma else 0.0)
                 ious.append(inter / uniao if uniao else 0.0)
-    return {
-        "dice": float(np.mean(dices)) if dices else 0.0,
-        "iou": float(np.mean(ious)) if ious else 0.0,
-        "fp_fundos": fp / n_fundo if n_fundo else 0.0,
-        "perda": float(np.mean(perdas)),
-        "n_positivos": len(dices),
-        "n_fundos": n_fundo,
-    }
+    return {"dice": float(np.mean(dices)) if dices else None,
+            "iou": float(np.mean(ious)) if ious else None,
+            "fp_fundos": fp / n_fundo if n_fundo else None,
+            "perda": float(np.mean(perdas)), "n_positivos": len(dices), "n_fundos": n_fundo}
 
 
-def main():
-    # criando dataset de treino, validacao e teste, com data augmentation apenas no treino
-    tr = DataLoader(KvasirSeg("train", treino=True), batch_size=BATCH, shuffle=True,
-                    num_workers=4, pin_memory=True, drop_last=True)
-    va = DataLoader(KvasirSeg("val"), batch_size=BATCH, num_workers=4, pin_memory=True)
-    te = DataLoader(KvasirSeg("test"), batch_size=BATCH, num_workers=4, pin_memory=True)
-    print(f"train={len(tr.dataset)}  val={len(va.dataset)}  test={len(te.dataset)}")
-    # init do modelo
-    modelo = UNet(n_channels=3, n_classes=1, base=BASE).cuda()
-    print(f"parametros: {sum(p.numel() for p in modelo.parameters()) / 1e6:.1f}M")
+def salvar_json(arquivo, valor):
+    temporario = arquivo.with_suffix(".tmp")
+    temporario.write_text(json.dumps(valor, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    temporario.replace(arquivo)
 
-    # optimizer AdamW com weight decay para regularizacao, e learning rate inicial definido
-    opt = torch.optim.AdamW(modelo.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    # scheduler para regular o learning rate ao longo do treinamento, usando Cosine Annealing
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCAS)
-    # smp or scaler para reduzir o uso de memória durante o treinamento, usando mixed precision training (AMP)
-    scaler = torch.amp.GradScaler("cuda")
 
-    # criando diretório para salvar os pesos do modelo e inicializando variáveis para acompanhar o melhor desempenho
-    pesos_dir = runs_path / NOME / "weights"
-    pesos_dir.mkdir(parents=True, exist_ok=True)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dados", type=Path, default=data_path)
+    parser.add_argument("--runs", type=Path, default=runs_path,
+                        help="Pasta de saída dos treinos e checkpoints")
+    parser.add_argument("--artifacts", type=Path, default=artifacts_path,
+                        help="Pasta de saída dos relatórios JSON")
+    parser.add_argument("--nome", default=NOME)
+    parser.add_argument("--epocas", type=int, default=EPOCAS)
+    parser.add_argument("--imgsz", type=int, default=IMGSZ)
+    parser.add_argument("--batch", type=int, default=BATCH)
+    parser.add_argument("--base", type=int, default=BASE)
+    parser.add_argument("--lr", type=float, default=LEARNING_RATE)
+    parser.add_argument("--patience", type=int, default=EARLY_STOP)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--device", default="auto", help="auto, cpu, 0 ou cuda:0")
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--area-minima", type=int, default=AREA_MINIMA)
+    args = parser.parse_args(argv)
+    if min(args.epocas, args.batch, args.base, args.patience) < 1 or args.lr <= 0:
+        parser.error("Épocas, batch, base, patience e lr devem ser positivos")
+    if args.imgsz < 32 or args.imgsz % 16 or args.workers < 0 or args.area_minima < 0:
+        parser.error("imgsz deve ser múltiplo de 16 e >=32; workers e área devem ser não negativos")
+    if Path(args.nome).name != args.nome or args.nome in {"", ".", ".."}:
+        parser.error("--nome deve ser um nome de pasta simples")
+    run = args.runs / args.nome
+    artefato = args.artifacts / f"{args.nome}.json"
+    if run.exists() or artefato.exists():
+        parser.error("Esse experimento já existe; escolha outro --nome para preservar os resultados")
+    try:
+        device = dispositivo(args.device)
+        datasets = {s: KvasirSeg(s, treino=s == "train", dados=args.dados, imgsz=args.imgsz,
+                               seed=args.seed)
+                    for s in ("train", "val", "test")}
+    except (OSError, ValueError) as erro:
+        parser.error(str(erro))
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    loaders = {s: DataLoader(d, batch_size=args.batch, shuffle=s == "train",
+                            num_workers=args.workers, pin_memory=device.type == "cuda",
+                            drop_last=s == "train" and len(d) >= args.batch)
+               for s, d in datasets.items()}
+    print("  ".join(f"{s}={len(d)}" for s, d in datasets.items()), flush=True)
+    modelo = UNet(n_channels=3, n_classes=1, base=args.base).to(device)
+    opt = torch.optim.AdamW(modelo.parameters(), lr=args.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epocas)
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+    pesos_dir = run / "weights"
+    pesos_dir.mkdir(parents=True, exist_ok=False)
+    manifest = args.dados / "split_manifest.json"
+    config = {"modelo": "unet", "base": args.base, "imgsz": args.imgsz, "batch": args.batch,
+              "epocas_solicitadas": args.epocas, "lr": args.lr, "seed": args.seed,
+              "patience": args.patience, "workers": args.workers,
+              "drop_last": {s: loader.drop_last for s, loader in loaders.items()},
+              "device": str(device), "amp": scaler.is_enabled(), "limiar": 0.5,
+              "area_minima": args.area_minima, "media": MEDIA.tolist(), "desvio": DESVIO.tolist(),
+              "torch": str(torch.__version__), "dados": str(args.dados.resolve()),
+              "split_manifest_sha256": sha256(manifest) if manifest.is_file() else None}
+    salvar_json(run / "config.json", config)
     melhor, melhor_ep, historico = -1.0, 0, []
-
-    # train process, para cada epoca, o modelo é treinado em batches de imagens e máscaras, calculando a perda e atualizando os pesos do modelo. 
-    # após cada época, o modelo é avaliado no conjunto de validação e as métricas são registradas. 
-    # Se o desempenho melhorar, os pesos do modelo são salvos. O treinamento é interrompido se não houver melhora após um número definido de épocas (early stopping).
-    for ep in range(1, EPOCAS + 1):
+    for ep in range(1, args.epocas + 1):
         modelo.train()
         soma = 0.0
-        for x, y in tr:
-            x, y = x.cuda(non_blocking=True), y.cuda(non_blocking=True)
+        for x, y in loaders["train"]:
+            x, y = x.to(device), y.to(device)
             opt.zero_grad(set_to_none=True)
-            with torch.autocast("cuda", dtype=torch.float16):
-                p = loss_bce_dice(modelo(x), y)
-            scaler.scale(p).backward()
+            with torch.autocast(device.type, enabled=scaler.is_enabled()):
+                logit = modelo(x)
+                perda = loss_bce_dice(logit.float(), y)
+            scaler.scale(perda).backward()
             scaler.step(opt)
             scaler.update()
-            soma += p.item()
+            soma += perda.item()
         sched.step()
-
-        m = avalia(modelo, va)
-        historico.append({"epoca": ep, "perda_treino": soma / len(tr), **m})
-        print(f"ep {ep:3d}/{EPOCAS}  treino={soma/len(tr):.4f}  val_dice={m['dice']:.4f} "
-              f"iou={m['iou']:.4f}  fp={m['fp_fundos']:.3f}")
-
-        # o checkpoint e escolhido pelo Dice de VALIDACAO, nunca pelo teste
+        m = avalia(modelo, loaders["val"], area_minima=args.area_minima, amp=args.amp)
+        if m["dice"] is None:
+            raise ValueError("Validação sem máscara positiva; confira o split dos dados")
+        historico.append({"epoca": ep, "perda_treino": soma / len(loaders["train"]), **m})
+        print(f"ep {ep:3d}/{args.epocas} treino={historico[-1]['perda_treino']:.4f} "
+              f"val_dice={m['dice']:.4f} iou={m['iou']:.4f} fp={m['fp_fundos']}", flush=True)
+        # Metadados viajam junto dos pesos; inferência não depende dos defaults do código.
+        checkpoint = {"state_dict": modelo.state_dict(), "config": config, "epoca": ep}
+        temp = pesos_dir / "last.tmp"
+        torch.save(checkpoint, temp)
+        temp.replace(pesos_dir / "last.pt")
         if m["dice"] > melhor:
             melhor, melhor_ep = m["dice"], ep
-            torch.save(modelo.state_dict(), pesos_dir / "best.pt")
-        elif ep - melhor_ep >= EARLY_STOP:
-            print(f"early stopping: {EARLY_STOP} epocas sem melhora")
+            temp = pesos_dir / "best.tmp"
+            torch.save(checkpoint, temp)
+            temp.replace(pesos_dir / "best.pt")
+        salvar_json(run / "historico.json", historico)
+        if ep - melhor_ep >= args.patience:
             break
-
-    # avaliacao final no TESTE, com o melhor checkpoint
-    modelo.load_state_dict(torch.load(pesos_dir / "best.pt"))
-    teste = avalia(modelo, te)
-
-    resultado = {
-        "nome": NOME,
-        "data": datetime.now().isoformat(timespec="seconds"),
-        "config": {
-            "modelo": f"unet (base={BASE})",
-            "parametros_M": round(sum(p.numel() for p in modelo.parameters()) / 1e6, 2),
-            "epocas": len(historico), "imgsz": IMGSZ, "batch": BATCH, "lr": LEARNING_RATE,
-            "melhor_epoca": melhor_ep, "split": "test",
-            "pesos": f"runs/{NOME}/weights/best.pt",
-        },
-        "metricas": teste,
-        "val_melhor_dice": melhor,
-    }
-    artifacts_path.mkdir(parents=True, exist_ok=True)
-    (artifacts_path / f"{NOME}.json").write_text(json.dumps(resultado, indent=2))
-    (runs_path / NOME / "historico.json").write_text(json.dumps(historico, indent=2))
-    print(json.dumps(resultado["metricas"], indent=2))
+    best = pesos_dir / "best.pt"
+    modelo.load_state_dict(torch.load(best, map_location=device, weights_only=True)["state_dict"])
+    teste = avalia(modelo, loaders["test"], area_minima=args.area_minima, amp=args.amp)
+    resultado = {"nome": args.nome, "data": datetime.now().isoformat(timespec="seconds"),
+                 "config": {**config, "epocas": len(historico), "melhor_epoca": melhor_ep,
+                            "split": "test", "pesos": str(best.resolve())},
+                 "metricas": teste, "val_melhor_dice": melhor}
+    args.artifacts.mkdir(parents=True, exist_ok=True)
+    salvar_json(artefato, resultado)
+    print(json.dumps(resultado, indent=2, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

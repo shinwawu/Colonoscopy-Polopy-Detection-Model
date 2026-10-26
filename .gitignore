@@ -1,12 +1,49 @@
-.venv
-.DS_Store
+# Novos dados e verificações locais não entram no Git.
+# Dados e resultados já versionados no baseline continuam preservados.
+/data/
+/tests/
+/docs/
+/notebooks/*colab*.ipynb
 
-# dados derivados: gerados por src/preprocess.py a partir de data/raw/
-# data/raw/ FICA versionado, para quem clonar conseguir rodar o preprocess
-data/processed/
-
-# saidas de treino e pesos
-weights/
+# Novos pesos, execuções e relatórios. Os resultados rastreados do baseline ficam.
+/weights/
+/runs/
+/artifacts/
 *.pt
+*.pth
+*.ckpt
+*.onnx
+*.log
 
-data/raw/hyperkvasir/
+# Ambiente, bytecode e caches Python/Jupyter.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# Configurações locais, credenciais e arquivos do sistema/editor.
+/.agents/
+/.codex/
+/.aws/
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

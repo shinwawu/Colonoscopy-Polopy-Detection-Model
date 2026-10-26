@@ -1,85 +1,37 @@
-import shutil
+"""Prepara os mesmos splits e máscaras para YOLO e U-Net, sem treinar modelos."""
+import argparse
+import hashlib
+import json
 import random
+import shutil
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
 import numpy as np
-import torch
-from ultralytics.data.converter import convert_segment_masks_to_yolo_seg
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("Using GPU:", torch.cuda.get_device_name(0))
-else:
-    device = torch.device("cpu")
-    print("Using CPU")
+from avaliacao_externa import ler_imagem, sha256
+from config import DADOS, ROOT
 
-random.seed(42)
-np.random.seed(42)
-
-# raw images
-path = Path(__file__).parent.parent
-data_path = path / "data/raw/Kvasir-SEG"
-yolo_data_path = path / "data/processed/Kvasir-SEG"
-binary_masks_path = yolo_data_path / "masks_binary"
-labels_all_path = yolo_data_path / "labels_all"
-# imagens de ceco normal (HyperKvasir): frames de colon SEM polipo, usadas como fundo
-negativos_path = path / "data/raw/hyperkvasir/cecum"
-# fracao dos negativos disponiveis a usar (1.0 = todos os 1009, ~1:1 com os positivos)
-FRACAO_NEGATIVOS = 1.0
-
-# to train the yolo model, the masks are in binary, so we need to convert the masks to txt containing the coordinates of the masks in yolo format
-# the masks are in jpg format and contains 3 channels
-# so we will binarize to have 2 classes: background and polyp
-# and preprocess them with morphological operations to remove noise and fill holes
-# saving them in png format to avoid compression artifacts from jpg
-# 
-
-
-# create the folders if they don't exist
-yolo_data_path.mkdir(parents=True, exist_ok=True)
-labels_all_path.mkdir(parents=True, exist_ok=True)
-binary_masks_path.mkdir(parents=True, exist_ok=True)
-
-
-for mask_path in sorted(data_path.glob("masks/*.jpg")):
-    # carregar a mascara em escala de cinza
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-    # binarizar a mascara: 0 para fundo, 1 para polipo
-    _, binary_mask = cv2.threshold(mask, 127, 1, cv2.THRESH_BINARY)
-    # abertura para remover ruido
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    #fechamento para preencher buracos
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-
-    # salvar a mascara binaria como PNG para evitar ruidos pela compressao jpeg
-    if not cv2.imwrite(str(binary_masks_path / f"{mask_path.stem}.png"), binary_mask):
-        raise IOError(f"falha ao escrever a mascara binaria: {mask_path.stem}.png")
-# converter as mascaras binarias para o formato YOLO
-convert_segment_masks_to_yolo_seg(
-    masks_dir=str(binary_masks_path), output_dir=str(labels_all_path), classes=1
-)
-
-# algumas imagens de treino sao quase identicas, pois sao frames consecutivos. Entao caso caissem
-# em splits diferentes, as imagens de teste seriam praticamente iguais as de treino, e o modelo teria um desempenho muito acima.
-# Entao agrupamos imagens quase-identicas e mantemos cada grupo num unico split.
 LIMIAR_SIMILARIDADE = 0.90
 
 
 def agrupar_quase_duplicatas(files, limiar=LIMIAR_SIMILARIDADE, lado=128):
-    # carregar as imagens em escala de cinza, redimensionar para lado x lado, normalizar e calcular a matriz de similaridade
-    T = np.stack([
-        cv2.resize(cv2.imread(str(f), cv2.IMREAD_GRAYSCALE), (lado, lado)).astype(np.float32).ravel()
-        for f in files
-    ])
-    # normalizar cada vetor de caracteristicas para ter media 0 e norma 1, para que o produto interno seja a correlacao
-    T -= T.mean(1, keepdims=True)
-    T /= np.linalg.norm(T, axis=1, keepdims=True) + 1e-9
-    C = T @ T.T
-
-    # agrupar imagens com correlacao acima do limiar, usando union-find
-    n = len(files)
-    pai = list(range(n))
+    if not files:
+        return []
+    vetores = []
+    for f in files:
+        cinza = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE)
+        if cinza is None:
+            raise ValueError(f"Imagem ilegível: {f}")
+        vetores.append(cv2.resize(cinza, (lado, lado)).astype(np.float32).ravel())
+    t = np.stack(vetores)
+    t -= t.mean(1, keepdims=True)
+    t /= np.linalg.norm(t, axis=1, keepdims=True) + 1e-9
+    correlacao = t @ t.T
+    # Frames com bytes idênticos também ficam juntos, inclusive imagens constantes.
+    pai = list(range(len(files)))
 
     def find(x):
         while pai[x] != x:
@@ -87,84 +39,154 @@ def agrupar_quase_duplicatas(files, limiar=LIMIAR_SIMILARIDADE, lado=128):
             x = pai[x]
         return x
 
-    # para cada par de imagens com correlacao acima do limiar, unir os grupos
-    for i, j in zip(*np.where(np.triu(C > limiar, 1))):
+    def unir(i, j):
         a, b = find(i), find(j)
         if a != b:
             pai[a] = b
+
+    for i, j in zip(*np.where(np.triu(correlacao > limiar, 1))):
+        unir(i, j)
+    hashes = {}
+    for i, f in enumerate(files):
+        digest = sha256(f)
+        if digest in hashes:
+            unir(i, hashes[digest])
+        hashes[digest] = i
     grupos = {}
-    # para cada grupo, criar uma lista de arquivos correspondentes
-    for i in range(n):
-        grupos.setdefault(find(i), []).append(files[i])
+    for i, f in enumerate(files):
+        grupos.setdefault(find(i), []).append(f)
     return list(grupos.values())
 
 
-def split_por_grupo(files, fracoes=(0.8, 0.1, 0.1)):
-    # realizar split de treino, validacao e teste, mantendo cada grupo de imagens quase-duplicadas no mesmo split
-    grupos = agrupar_quase_duplicatas(files)
-    # embaralhar os grupos para que a ordem dos arquivos nao influencie o split
-    random.shuffle(grupos)
-    n = len(files)
-    # cotas de cada split, em numero de imagens
-    cotas = {"train": fracoes[0] * n, "val": fracoes[1] * n, "test": fracoes[2] * n}
+def split_por_grupo(files, rng, limiar=LIMIAR_SIMILARIDADE):
+    grupos = agrupar_quase_duplicatas(files, limiar)
+    rng.shuffle(grupos)
+    cotas = {"train": 0.8 * len(files), "val": 0.1 * len(files), "test": 0.1 * len(files)}
     out = {k: [] for k in cotas}
-    # para cada grupo, alocar no split que tem mais espaco restante, para que os splits fiquem balanceados
-    for g in sorted(grupos, key=len, reverse=True):
+    for grupo in sorted(grupos, key=len, reverse=True):
         alvo = max(cotas, key=lambda k: cotas[k] - len(out[k]))
-        out[alvo].extend(g)
-    # imprimir quantos grupos foram formados, e quantos deles tem mais de uma imagem
-    n_multi = sum(1 for g in grupos if len(g) > 1)
-    print(f"  {len(grupos)} grupos ({n_multi} com >1 imagem) para {n} imagens")
+        out[alvo].extend(grupo)
+    print(f"{len(files)} imagens em {len(grupos)} grupos", flush=True)
     return out
 
 
-# separar imagens em treino, teste e validacao
-files = sorted((data_path / "images").glob("*.jpg"))
-print("agrupando positivos:")
-splits_pos = split_por_grupo(files)
+def preparar(raw, negativos, saida, seed=42, limiar=LIMIAR_SIMILARIDADE, sem_negativos=False, recriar=False):
+    raw, negativos, saida = Path(raw).resolve(), Path(negativos).resolve(), Path(saida).resolve()
+    positivos = sorted((raw / "images").glob("*.jpg"))
+    fundos = [] if sem_negativos else sorted(negativos.glob("*.jpg"))
+    if not positivos:
+        raise ValueError(f"Kvasir-SEG ausente em {raw}")
+    if not sem_negativos and not fundos:
+        raise ValueError("Negativos ausentes: execute src/download_negatives.py; --sem-negativos é um experimento diferente")
+    if not 0 < limiar <= 1:
+        raise ValueError("Limiar deve estar em (0,1]")
+    nomes = [p.stem for p in positivos + fundos]
+    if len(set(nomes)) != len(nomes):
+        raise ValueError("Há nomes de imagens repetidos entre as fontes")
+    # A remoção só é permitida dentro do destino, nunca numa fonte ou seu ancestral.
+    if any(saida == fonte or saida in fonte.parents or fonte in saida.parents for fonte in (raw, negativos)):
+        raise ValueError("A saída deve ser separada das fontes raw e negativos")
+    if saida.exists() and not recriar:
+        raise FileExistsError(f"{saida} já existe. Reutilize os dados ou use --recriar explicitamente.")
+    for p in positivos:
+        if not (raw / "masks" / p.name).is_file():
+            raise FileNotFoundError(f"Máscara original ausente: {p.name}")
+    rng = random.Random(seed)
+    print("Agrupando positivos:", flush=True)
+    splits_pos = split_por_grupo(positivos, rng, limiar)
+    # Mantém a ordem do pipeline original: shuffle dos negativos antes do agrupamento.
+    rng.shuffle(fundos)
+    print("Agrupando negativos:", flush=True)
+    splits_neg = split_por_grupo(fundos, rng, limiar)
+    for s in splits_pos:
+        if not splits_pos[s]:
+            raise ValueError(f"Split {s} sem positivos; confira quantidade de grupos e limiar")
+    saida.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".preprocess-", dir=saida.parent))
+    try:
+        masks = staging / "masks_binary"
+        masks.mkdir()
+        for p in positivos:
+            img = ler_imagem(p)
+            mask = cv2.imread(str(raw / "masks" / p.name), cv2.IMREAD_GRAYSCALE)
+            if mask is None or mask.shape != img.shape[:2]:
+                raise ValueError(f"Máscara ilegível ou tamanho incompatível: {p.name}")
+            binary = (mask > 127).astype(np.uint8)
+            kernel = np.ones((3, 3), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+            if not binary.any():
+                raise ValueError(f"Máscara positiva vazia após processamento: {p.name}")
+            if not cv2.imwrite(str(masks / f"{p.stem}.png"), binary):
+                raise OSError(f"Falha ao salvar máscara: {p.name}")
+        from ultralytics.data.converter import convert_segment_masks_to_yolo_seg
+        labels = staging / "labels_all"
+        labels.mkdir()
+        convert_segment_masks_to_yolo_seg(masks_dir=str(masks), output_dir=str(labels), classes=1)
+        manifest = {"seed": seed, "limiar_similaridade": limiar,
+                    "fontes": ["Kvasir-SEG"] + ([] if sem_negativos else ["HyperKvasir/cecum"]),
+                    "fracoes_alvo": [0.8, 0.1, 0.1], "splits": {}}
+        vistos = {}
+        for split in splits_pos:
+            imdir, lbdir = staging / "images" / split, staging / "labels" / split
+            imdir.mkdir(parents=True)
+            lbdir.mkdir(parents=True)
+            registros = []
+            for negativo, arquivos in ((False, splits_pos[split]), (True, splits_neg[split])):
+                for p in arquivos:
+                    digest = sha256(p)
+                    if digest in vistos and vistos[digest] != split:
+                        raise ValueError("Imagem idêntica em splits distintos; confira as fontes")
+                    vistos[digest] = split
+                    shutil.copy2(p, imdir / p.name)
+                    label = lbdir / f"{p.stem}.txt"
+                    if negativo:
+                        label.write_text("", encoding="utf-8")
+                    else:
+                        fonte = labels / label.name
+                        if not fonte.is_file() or not fonte.read_text().strip():
+                            raise ValueError(f"Polígono YOLO ausente: {p.name}")
+                        shutil.copy2(fonte, label)
+                    registros.append({"imagem": f"images/{split}/{p.name}", "sha256": digest,
+                                      "negativo": negativo,
+                                      "mascara_sha256": None if negativo else sha256(masks / f"{p.stem}.png")})
+            manifest["splits"][split] = registros
+            print(f"{split}: {len(splits_pos[split])} positivos + {len(splits_neg[split])} negativos", flush=True)
+        # Hash sem timestamp ou caminhos locais: identifica o mesmo conjunto em outra máquina.
+        manifest["id_conjunto"] = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+        manifest["data_utc"] = datetime.now(timezone.utc).isoformat()
+        (staging / "split_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        (staging / "data.yaml").write_text(
+            f"path: {json.dumps(str(saida))}\ntrain: images/train\nval: images/val\ntest: images/test\nnames:\n  0: polyp\n",
+            encoding="utf-8")
+        if saida.exists():
+            shutil.rmtree(saida)  # apenas com --recriar e depois de gerar/validar tudo
+        staging.rename(saida)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return manifest
 
-for split, arquivos in splits_pos.items():
-    # para cada split, criar as pastas de imagens e labels, e copiar os arquivos correspondentes
-    images_dir = yolo_data_path / "images" / split
-    labels_dir = yolo_data_path / "labels" / split
-    shutil.rmtree(images_dir, ignore_errors=True)
-    shutil.rmtree(labels_dir, ignore_errors=True)
-    images_dir.mkdir(parents=True, exist_ok=True)
-    labels_dir.mkdir(parents=True, exist_ok=True)
 
-    for img_path in arquivos:
-        # estamos copiando a imagem para a pasta de imagens, e o label correspondente para a pasta de labels
-        shutil.copy2(img_path, images_dir / img_path.name)
-        shutil.copy2(labels_all_path / f"{img_path.stem}.txt", labels_dir / f"{img_path.stem}.txt")
-    print(f"{split}: {len(arquivos)} imagens")
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--raw", type=Path, default=ROOT / "data/raw/Kvasir-SEG")
+    parser.add_argument("--negativos", type=Path, default=ROOT / "data/raw/hyperkvasir/cecum")
+    parser.add_argument("--saida", type=Path, default=DADOS)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--limiar", type=float, default=LIMIAR_SIMILARIDADE)
+    parser.add_argument("--sem-negativos", action="store_true")
+    parser.add_argument("--recriar", action="store_true")
+    args = parser.parse_args()
+    try:
+        manifest = preparar(args.raw, args.negativos, args.saida, args.seed, args.limiar,
+                            args.sem_negativos, args.recriar)
+    except (OSError, ValueError) as erro:
+        parser.exit(2, f"Erro: {erro}\n")
+    print("Conjunto:", manifest["id_conjunto"])
+    print("Dados prontos em", args.saida.resolve())
 
-# imagens de fundo: o YOLO trata como negativo toda imagem cujo .txt esteja vazio.
-# sem elas o modelo nunca ve mucosa normal e nao ha como medir falso positivo por frame.
-if negativos_path.exists():
-    negativos = sorted(negativos_path.glob("*.jpg"))
-    random.shuffle(negativos)
-    negativos = negativos[: int(len(negativos) * FRACAO_NEGATIVOS)]
-    # os negativos tambem vem de video: mesmo agrupamento
-    print("agrupando negativos:")
-    splits_neg = split_por_grupo(negativos)
-    for split, arquivos in splits_neg.items():
-        images_dir = yolo_data_path / "images" / split
-        labels_dir = yolo_data_path / "labels" / split
-        for img_path in arquivos:
-            shutil.copy2(img_path, images_dir / img_path.name)
-            # .txt vazio = imagem de fundo
-            (labels_dir / f"{img_path.stem}.txt").write_text("")
-        print(f"{split}: +{len(arquivos)} negativos")
-else:
-    print(f"AVISO: {negativos_path} nao existe, treinando sem imagens de fundo")
 
-# escrever o arquivo data.yaml para o treinamento do modelo YOLO
-(yolo_data_path / "data.yaml").write_text(
-    f"path: {yolo_data_path.resolve()}\n"
-    "train: images/train\n"
-    "val: images/val\n"
-    "test: images/test\n"
-    "names:\n"
-    "  0: polyp\n"
-)
-
+if __name__ == "__main__":
+    main()

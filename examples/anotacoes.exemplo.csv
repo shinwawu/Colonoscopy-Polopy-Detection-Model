@@ -1,0 +1,4 @@
+imagem,mascara,presenca,origem
+polipo.jpg,masks/polipo.png,1,preencher com dataset ou URL de origem
+negativo.jpg,,0,preencher com fonte da anotacao negativa
+sem_anotacao.jpg,,,preencher com dataset ou URL de origem

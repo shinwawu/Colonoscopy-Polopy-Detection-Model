@@ -1,18 +1,55 @@
 [project]
 name = "colonoscopy-polopy-detection-model"
 version = "0.1.0"
-description = "Add your description here"
+description = "Polyp segmentation with YOLO11 and U-Net, including shared image evaluation"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.15"
 dependencies = [
     "albumentations>=2.0.8",
     "ipykernel>=7.3.0",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.3",
     "opencv-python>=5.0.0.93",
     "segmentation-models-pytorch>=0.5.0",
-    "ultralytics>=8.4.146",
+    "torch==2.14.0",
+    "torchvision==0.29.0",
+    "ultralytics==8.4.146",
 ]
 
-[dependency-groups]
-dev = [
-    "ipykernel>=7.3.0",
+[project.optional-dependencies]
+notebooks = ["jupyterlab>=4.4.0", "nbclient>=0.10.0"]
+cpu = ["torch==2.14.0", "torchvision==0.29.0"]
+cuda126 = ["torch==2.14.0", "torchvision==0.29.0"]
+cuda130 = ["torch==2.14.0", "torchvision==0.29.0"]
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda126" }, { extra = "cuda130" }]]
+
+# Sem extra, usa os wheels padrão do PyPI. Os extras escolhem explicitamente
+# CPU, CUDA 12.6 ou CUDA 13 em Linux/Windows x86_64; macOS mantém o wheel nativo.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
+    { index = "pytorch-cu126", extra = "cuda126", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
+    { index = "pytorch-cu130", extra = "cuda130", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
 ]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
+    { index = "pytorch-cu126", extra = "cuda126", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
+    { index = "pytorch-cu130", extra = "cuda130", marker = "sys_platform != 'darwin' and platform_machine in 'x86_64 AMD64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
