@@ -1,0 +1,33 @@
+{
+  "modelo": "unet",
+  "base": 32,
+  "imgsz": 384,
+  "batch": 8,
+  "epocas_solicitadas": 100,
+  "lr": 0.001,
+  "seed": 42,
+  "patience": 25,
+  "workers": 4,
+  "drop_last": {
+    "train": true,
+    "val": false,
+    "test": false
+  },
+  "device": "cuda:0",
+  "amp": true,
+  "limiar": 0.5,
+  "area_minima": 500,
+  "media": [
+    0.48500001430511475,
+    0.4560000002384186,
+    0.4059999883174896
+  ],
+  "desvio": [
+    0.2290000021457672,
+    0.2240000069141388,
+    0.22499999403953552
+  ],
+  "torch": "2.14.0+cu130",
+  "dados": "/home/soiltecnologia/Documentos/Projects/Colonoscopy-Polopy-Detection-Model/data/processed/Kvasir-SEG",
+  "split_manifest_sha256": null
+}

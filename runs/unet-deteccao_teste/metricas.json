@@ -1,0 +1,137 @@
+{
+  "nome": "unet-deteccao_teste",
+  "data": "2026-10-28T04:03:09",
+  "config": {
+    "modelo": "unet (base=32)",
+    "imgsz": 384,
+    "split": "test",
+    "limiar": 0.65,
+    "limiar_escolhido_em": "val",
+    "area_minima": 500,
+    "pesos": "runs/unet-deteccao/weights/best.pt"
+  },
+  "metricas": {
+    "limiar": 0.65,
+    "dice": 0.7597621587840092,
+    "dice_mediana": 0.8386427369236595,
+    "dice_erro_padrao": 0.02129813250827416,
+    "iou": 0.6525434524930429,
+    "precisao_px": 0.8419657462701275,
+    "recall_px": 0.6811328342291462,
+    "fp_fundos": 0.21782178217821782,
+    "falhas_dice_abaixo_0.5": 15,
+    "acertos_dice_acima_0.9": 31,
+    "n_positivos": 100,
+    "n_fundos": 101
+  },
+  "matriz_confusao": {
+    "ordem": "[[pred_polipo/true_polipo, pred_polipo/true_fundo], [pred_fundo/true_polipo, pred_fundo/true_fundo]]",
+    "valores": [
+      [
+        100,
+        22
+      ],
+      [
+        0,
+        79
+      ]
+    ]
+  },
+  "varredura_val": [
+    {
+      "limiar": 0.05,
+      "dice": 0.7041308913919512,
+      "fp_fundos": 0.48514851485148514
+    },
+    {
+      "limiar": 0.1,
+      "dice": 0.7319239287865136,
+      "fp_fundos": 0.3465346534653465
+    },
+    {
+      "limiar": 0.15,
+      "dice": 0.7431311463162761,
+      "fp_fundos": 0.2871287128712871
+    },
+    {
+      "limiar": 0.2,
+      "dice": 0.7497675863853719,
+      "fp_fundos": 0.27722772277227725
+    },
+    {
+      "limiar": 0.25,
+      "dice": 0.7558990305826724,
+      "fp_fundos": 0.25742574257425743
+    },
+    {
+      "limiar": 0.3,
+      "dice": 0.7618527981846281,
+      "fp_fundos": 0.25742574257425743
+    },
+    {
+      "limiar": 0.35,
+      "dice": 0.7651278549649022,
+      "fp_fundos": 0.2376237623762376
+    },
+    {
+      "limiar": 0.4,
+      "dice": 0.7669414131388976,
+      "fp_fundos": 0.2376237623762376
+    },
+    {
+      "limiar": 0.45,
+      "dice": 0.7692650440140625,
+      "fp_fundos": 0.2079207920792079
+    },
+    {
+      "limiar": 0.5,
+      "dice": 0.7707917220522909,
+      "fp_fundos": 0.15841584158415842
+    },
+    {
+      "limiar": 0.55,
+      "dice": 0.7716577265111908,
+      "fp_fundos": 0.1485148514851485
+    },
+    {
+      "limiar": 0.6,
+      "dice": 0.7726275791602433,
+      "fp_fundos": 0.1485148514851485
+    },
+    {
+      "limiar": 0.65,
+      "dice": 0.772999666110388,
+      "fp_fundos": 0.12871287128712872
+    },
+    {
+      "limiar": 0.7,
+      "dice": 0.7720699638150336,
+      "fp_fundos": 0.12871287128712872
+    },
+    {
+      "limiar": 0.75,
+      "dice": 0.77050644134881,
+      "fp_fundos": 0.09900990099009901
+    },
+    {
+      "limiar": 0.8,
+      "dice": 0.7672522026244418,
+      "fp_fundos": 0.07920792079207921
+    },
+    {
+      "limiar": 0.85,
+      "dice": 0.7588520172344062,
+      "fp_fundos": 0.06930693069306931
+    },
+    {
+      "limiar": 0.9,
+      "dice": 0.7399852234428989,
+      "fp_fundos": 0.0297029702970297
+    },
+    {
+      "limiar": 0.95,
+      "dice": 0.6813911754433748,
+      "fp_fundos": 0.009900990099009901
+    }
+  ]
+}

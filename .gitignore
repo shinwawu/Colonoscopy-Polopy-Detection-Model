@@ -6,10 +6,7 @@
 /notebooks/*colab*.ipynb
 
 # Novos pesos, execuções e relatórios. Os resultados rastreados do baseline ficam.
-/weights/
-/runs/
 /artifacts/
-*.pt
 *.pth
 *.ckpt
 *.onnx
