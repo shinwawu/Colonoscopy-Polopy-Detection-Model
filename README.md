@@ -51,14 +51,14 @@ negativos de ceco normal do [HyperKvasir](https://github.com/simula/hyper-kvasir
 em `data/raw/hyperkvasir/cecum/`:
 
 ```bash
-uv run --no-sync python src/download_data.py
-uv run --no-sync python src/preprocess.py
+uv run --no-sync python src/deteccao/download_dataset.py
+uv run --no-sync python src/deteccao/data_process.py
 ```
 
 Se preferir baixar o Kvasir-SEG manualmente pela página oficial, extraia-o para ter
 `data/raw/Kvasir-SEG/images/*.jpg` e `data/raw/Kvasir-SEG/masks/*.jpg`, ou salve o ZIP
 como `data/raw/kvasir-seg.zip` antes de executar o comando. Pastas existentes são validadas
-sem baixar novamente. `src/download_negatives.py` continua disponível para obter só os negativos.
+sem baixar novamente. `src/deteccao/download_dataset.py --apenas-negativos` baixa só os negativos.
 
 O download usa timeout longo e até cinco tentativas. Reutiliza a pasta validada ou o ZIP
 já baixado e preserva o arquivo para não precisar transferi-lo de novo. Em caso de queda
@@ -71,7 +71,7 @@ antes da divisão 80/10/10, com seed 42 e correlação >0,90; as proporções po
 tamanho dos grupos. Não mude esse conjunto entre os dois treinos.
 
 Se os dados já estão preparados, pule o segundo comando. Para recriá-los conscientemente,
-use `src/preprocess.py --recriar`; isso substitui os dados derivados, preservando as fontes.
+use `src/deteccao/data_process.py --recriar`; isso substitui os dados derivados, preservando as fontes.
 A falta de negativos é erro por padrão. `--sem-negativos` cria outro experimento, sem permitir
 medir falsos positivos em fundos. Não transfira `data.yaml` de outra máquina: ele é gerado
 com o caminho local. Refaça o preparo no destino.
@@ -81,8 +81,8 @@ com o caminho local. Refaça o preparo no destino.
 Com GPU NVIDIA compatível:
 
 ```bash
-uv run --no-sync python -u src/train_yolo.py --device 0 --batch 4
-uv run --no-sync python -u src/train_unet.py --device 0 --batch 4
+uv run --no-sync python -u src/deteccao/train_yolo.py --device 0 --batch 4
+uv run --no-sync python -u src/deteccao/train_unet.py --device 0 --batch 4
 ```
 
 Para CPU, substitua `--device 0` por `--device cpu`. Sem `--device`, o script escolhe CUDA
@@ -104,13 +104,14 @@ Os nomes padrão separam os dois experimentos:
 
 | Modelo | Checkpoint selecionado | Histórico e configuração | Métricas do teste interno |
 | --- | --- | --- | --- |
-| YOLO | `runs/yolo-polyp/weights/best.pt` | `runs/yolo-polyp/results.csv`, `args.yaml` | `artifacts/yolo-polyp.json` |
-| U-Net | `runs/unet-polyp/weights/best.pt` | `runs/unet-polyp/historico.json`, `config.json` | `artifacts/unet-polyp.json` |
+| YOLO | `runs/yolo-deteccao/weights/best.pt` | `runs/yolo-deteccao/results.csv`, `args.yaml` | `artifacts/yolo-deteccao.json` |
+| U-Net | `runs/unet-deteccao/weights/best.pt` | `runs/unet-deteccao/historico.json`, `config.json` | `artifacts/unet-deteccao.json` |
 
-Ambos salvam `weights/last.pt` ao concluir cada época. A U-Net inclui configuração nos pesos
-e grava o histórico a cada época. Uma interrupção antes da primeira época completa pode não
-produzir checkpoint. Para repetir um experimento, escolha `--nome yolo-v2` / `--nome unet-v2`
-e atualize os caminhos no notebook. Um nome existente é recusado.
+Ambos guardam somente `weights/best.pt`, o melhor checkpoint da validação; o `last.pt` é
+descartado. A U-Net inclui configuração nos pesos e grava o histórico a cada época. Uma
+interrupção antes da primeira época completa pode não produzir checkpoint. Para repetir um
+experimento, escolha `--nome yolo-v2` / `--nome unet-v2` e atualize os caminhos no notebook.
+Um nome existente é recusado.
 
 `--runs CAMINHO` e `--artifacts CAMINHO` permitem escolher os diretórios dos resultados.
 Os caminhos padrão são os apresentados na tabela.
@@ -190,14 +191,14 @@ O notebook é a interface principal. Para exportar a comparação sem abrir Jupy
 
 ```bash
 # Teste interno, usando os dois checkpoints padrão:
-uv run --no-sync python src/compara_modelos.py
+uv run --no-sync python src/deteccao/compare_models.py
 
 # Conjunto externo anotado:
-uv run --no-sync python src/compara_modelos.py --origem data/external/images --anotacoes data/external/anotacoes.csv
+uv run --no-sync python src/deteccao/compare_models.py --origem data/external/images --anotacoes data/external/anotacoes.csv
 
 # Um modelo por vez, se necessário:
-uv run --no-sync python src/prediz_yolo.py --origem data/external/images
-uv run --no-sync python src/prediz_unet.py --origem data/external/images
+uv run --no-sync python src/deteccao/predict_yolo.py --origem data/external/images
+uv run --no-sync python src/deteccao/predict_unet.py --origem data/external/images
 ```
 
 Os dados e resultados versionados em `data/`, `runs/` e `artifacts/` registram o baseline

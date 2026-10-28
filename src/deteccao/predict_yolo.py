@@ -8,8 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from avaliacao_externa import carregar_casos, executar_avaliacao, sha256
-from config import PESOS_YOLO, ROOT, dispositivo
+from evaluation_core import carregar_casos, executar_avaliacao, sha256
+from evaluation_core import ROOT, dispositivo
+
+PESOS_YOLO = ROOT / "runs/yolo-deteccao/weights/best.pt"
 
 PESOS_PADRAO = PESOS_YOLO
 

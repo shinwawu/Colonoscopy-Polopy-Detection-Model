@@ -1,4 +1,8 @@
-"""Leitura, métricas e saídas comuns para os experimentos com imagens externas."""
+"""Leitura, métricas e saídas comuns aos experimentos, mais ROOT e seleção de device.
+
+Aqui fica só o que não é configuração de modelo: cada script define os próprios
+hiperparâmetros, caminhos de dados e nomes de execução.
+"""
 
 import csv
 import hashlib
@@ -9,7 +13,23 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+# src/deteccao/evaluation_core.py -> sobe tres niveis ate a raiz do repositorio
+ROOT = Path(__file__).resolve().parents[2]
+
 EXTENSOES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+def dispositivo(valor="auto"):
+    import torch
+
+    if valor == "auto":
+        valor = "cuda:0" if torch.cuda.is_available() else "cpu"
+    if str(valor).isdigit():
+        valor = f"cuda:{valor}"
+    device = torch.device(valor)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA indisponível neste ambiente; confira a instalação ou use --device cpu")
+    return device
 
 
 def sha256(arquivo):

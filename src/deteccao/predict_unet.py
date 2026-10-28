@@ -1,4 +1,4 @@
-"""Predição U-Net em imagens externas, com o mesmo protocolo usado pelo YOLO."""
+"""Predição U-Net em imagens externas"""
 import argparse
 import json
 from datetime import datetime
@@ -8,9 +8,13 @@ import cv2
 import numpy as np
 import torch
 
-from avaliacao_externa import carregar_casos, executar_avaliacao, sha256
-from config import DESVIO, MEDIA, PESOS_UNET, ROOT, dispositivo
+from evaluation_core import ROOT, carregar_casos, dispositivo, executar_avaliacao, sha256
+# a normalizacao vem gravada no checkpoint; estas constantes so atendem o
+# state_dict puro do baseline original, que nao carrega configuracao junto
+from train_unet import DESVIO, MEDIA
 from unet import UNet
+
+PESOS_UNET = ROOT / "runs/unet-deteccao/weights/best.pt"
 
 
 def carregar_unet(pesos, device="cpu", limiar=0.5):
